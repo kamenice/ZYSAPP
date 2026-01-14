@@ -1,0 +1,41 @@
+# Conveyor Belt Intelligent System
+# Features:
+# - HX711 pressure sensor for weight detection and auto-start
+# - DHT11 temperature sensor for overheat protection
+# - YL-62 infrared sensor for jam detection
+# - 3411 Hall sensor for speed measurement
+# - TB6612FNG motor driver for conveyor control
+# - SG90 servo for jam clearing vibration
+# - Buzzer for alarms
+# - OLED display for status
+# - WiFi/MQTT for remote monitoring and control
+
+static_library("conveyor_belt") {
+
+    # Source files
+    sources = [
+        "main.c",
+        "conveyor_system.c",
+        "hx711.c",
+        "dht11.c",
+        "infrared.c",
+        "hall_sensor.c",
+        "motor.c",
+        "servo.c",
+        "buzzer.c",
+        "oled_display.c",
+        "wifi_mqtt.c",
+    ]
+
+    # Include directories
+    include_dirs = [
+        ".",
+        "//utils/native/lite/include",
+        "//kernel/liteos_m/components/cmsis/2.0",
+        "//base/iot_hardware/interfaces/kits/wifiiot_lite",
+        "//vendor/hisi/hi3861/hi3861/third_party/lwip_sack/include",
+        "//foundation/communication/interfaces/kits/wifi_lite/wifiservice",
+        "//third_party/pahomqtt/MQTTPacket/src",
+        "//third_party/pahomqtt/MQTTPacket/samples",
+    ]
+}
