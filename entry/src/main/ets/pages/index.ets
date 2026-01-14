@@ -15,7 +15,7 @@
 
 import mqtt from '@ohos/mqtt'
 
-// MQTT配置
+// MQTT配置 - 与wifi_mqtt.h保持一致，实际部署时应从配置文件读取
 const MQTT_HOST: string = '192.168.43.230'
 const MQTT_PORT: number = 1883
 const MQTT_TOPIC_STATUS: string = 'conveyor/status'
@@ -71,6 +71,7 @@ struct ConveyorMonitor {
   // 连接MQTT服务器
   connectMqtt(): void {
     try {
+      // 凭证与wifi_mqtt.h保持一致，实际部署时应从安全存储读取
       const options: mqtt.MqttConnectOptions = {
         host: MQTT_HOST,
         port: MQTT_PORT,
@@ -133,7 +134,7 @@ struct ConveyorMonitor {
         this.handleAlert(alert)
       }
     } catch (error) {
-      console.error('消息解析错误')
+      console.error('消息解析错误:', error)
     }
   }
 
@@ -368,7 +369,7 @@ struct ConveyorMonitor {
           .backgroundColor('#9C27B0')
           .onClick(() => {
             this.sendCommand('clear_jam')
-            this.isJammed = false
+            // 堵塞状态将在收到MQTT状态更新后自动清除
           })
       }
       .width('100%')
