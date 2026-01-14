@@ -1,0 +1,823 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>传送带智能监控系统</title>
+    <!-- Google Font for Chinese characters (optional, works when online) -->
+    <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        /* Chinese font fallback chain for maximum compatibility */
+        @font-face {
+            font-family: 'SystemChinese';
+            src: local('PingFang SC'),
+                 local('Microsoft YaHei'),
+                 local('Noto Sans CJK SC'),
+                 local('Source Han Sans CN'),
+                 local('WenQuanYi Micro Hei'),
+                 local('SimHei'),
+                 local('Heiti SC');
+            font-weight: normal;
+            font-style: normal;
+        }
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: "Noto Sans SC", "PingFang SC", "Microsoft YaHei", "Hiragino Sans GB", "WenQuanYi Micro Hei", "SimHei", sans-serif;
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+            min-height: 100vh;
+            color: #fff;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 400px;
+            margin: 0 auto;
+        }
+
+        .header {
+            text-align: center;
+            margin-bottom: 20px;
+        }
+
+        .header h1 {
+            font-size: 24px;
+            font-weight: 600;
+            margin-bottom: 8px;
+        }
+
+        .connection-status {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 6px 14px;
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 20px;
+            font-size: 14px;
+        }
+
+        .status-dot {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            background: #ff4757;
+            transition: background-color 0.3s;
+        }
+
+        .status-dot.connected {
+            background: #2ed573;
+        }
+
+        .display-panel {
+            background: #0d1117;
+            border-radius: 16px;
+            padding: 20px;
+            margin-bottom: 20px;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+        }
+
+        .display-title {
+            font-size: 14px;
+            color: #8b949e;
+            margin-bottom: 16px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .display-title::before {
+            content: "";
+            display: block;
+            width: 4px;
+            height: 16px;
+            background: #58a6ff;
+            border-radius: 2px;
+        }
+
+        .display-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 14px 0;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+        }
+
+        .display-row:last-child {
+            border-bottom: none;
+        }
+
+        .display-label {
+            font-size: 16px;
+            color: #c9d1d9;
+        }
+
+        .display-value {
+            font-size: 20px;
+            font-weight: 600;
+            font-family: "Noto Sans SC", -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+            color: #58a6ff;
+        }
+
+        .alert-badge {
+            display: inline-block;
+            padding: 4px 10px;
+            border-radius: 12px;
+            font-size: 12px;
+            font-weight: 600;
+            margin-left: 8px;
+        }
+
+        .alert-danger {
+            background: rgba(255, 71, 87, 0.2);
+            color: #ff4757;
+        }
+
+        .alert-success {
+            background: rgba(46, 213, 115, 0.2);
+            color: #2ed573;
+        }
+
+        .alert-warning {
+            background: rgba(255, 165, 2, 0.2);
+            color: #ffa502;
+        }
+
+        .status-indicators {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 12px;
+            margin-bottom: 20px;
+        }
+
+        .status-card {
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 12px;
+            padding: 16px;
+            text-align: center;
+            transition: all 0.3s;
+        }
+
+        .status-card.active {
+            background: rgba(46, 213, 115, 0.15);
+            border: 1px solid rgba(46, 213, 115, 0.3);
+        }
+
+        .status-card.alert {
+            background: rgba(255, 71, 87, 0.15);
+            border: 1px solid rgba(255, 71, 87, 0.3);
+            animation: pulse 1.5s infinite;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.7; }
+        }
+
+        .status-card-icon {
+            font-size: 28px;
+            margin-bottom: 8px;
+        }
+
+        .status-card-label {
+            font-size: 12px;
+            color: #8b949e;
+            margin-bottom: 4px;
+        }
+
+        .status-card-value {
+            font-size: 14px;
+            font-weight: 600;
+        }
+
+        .controls {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 12px;
+            margin-bottom: 20px;
+        }
+
+        .control-btn {
+            background: linear-gradient(135deg, #58a6ff 0%, #388bfd 100%);
+            border: none;
+            border-radius: 12px;
+            padding: 16px;
+            color: #fff;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .control-btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 20px rgba(88, 166, 255, 0.3);
+        }
+
+        .control-btn:active {
+            transform: translateY(0);
+        }
+
+        .control-btn.start {
+            background: linear-gradient(135deg, #2ed573 0%, #26de81 100%);
+        }
+
+        .control-btn.stop {
+            background: linear-gradient(135deg, #ff4757 0%, #ff6b81 100%);
+        }
+
+        .control-btn.mute {
+            background: linear-gradient(135deg, #ffa502 0%, #ff9f43 100%);
+        }
+
+        .control-btn.clear {
+            background: linear-gradient(135deg, #a29bfe 0%, #6c5ce7 100%);
+        }
+
+        .control-btn-icon {
+            font-size: 24px;
+        }
+
+        .threshold-section {
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 16px;
+            padding: 20px;
+            margin-bottom: 20px;
+        }
+
+        .threshold-title {
+            font-size: 16px;
+            font-weight: 600;
+            margin-bottom: 16px;
+            color: #c9d1d9;
+        }
+
+        .threshold-row {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 12px;
+        }
+
+        .threshold-label {
+            font-size: 14px;
+            color: #8b949e;
+        }
+
+        .threshold-input {
+            background: rgba(0, 0, 0, 0.3);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 8px;
+            padding: 10px 14px;
+            color: #fff;
+            font-size: 14px;
+            width: 100px;
+            text-align: right;
+        }
+
+        .threshold-input:focus {
+            outline: none;
+            border-color: #58a6ff;
+        }
+
+        .threshold-btn {
+            background: #58a6ff;
+            border: none;
+            border-radius: 8px;
+            padding: 10px 20px;
+            color: #fff;
+            font-size: 14px;
+            cursor: pointer;
+            margin-top: 12px;
+            width: 100%;
+            transition: all 0.3s;
+        }
+
+        .threshold-btn:hover {
+            background: #388bfd;
+        }
+
+        .alert-panel {
+            background: rgba(255, 71, 87, 0.1);
+            border: 1px solid rgba(255, 71, 87, 0.3);
+            border-radius: 12px;
+            padding: 16px;
+            margin-bottom: 20px;
+            display: none;
+        }
+
+        .alert-panel.show {
+            display: block;
+            animation: slideIn 0.3s ease;
+        }
+
+        @keyframes slideIn {
+            from { opacity: 0; transform: translateY(-10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        .alert-panel-title {
+            font-size: 16px;
+            font-weight: 600;
+            color: #ff4757;
+            margin-bottom: 8px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .alert-panel-content {
+            font-size: 14px;
+            color: #ff6b81;
+        }
+
+        .oled-simulation {
+            background: #000;
+            border-radius: 8px;
+            padding: 16px;
+            font-family: "Noto Sans SC", "PingFang SC", "Microsoft YaHei", sans-serif;
+            font-size: 14px;
+            line-height: 2;
+            color: #00ff00;
+            margin-bottom: 20px;
+            border: 2px solid #333;
+        }
+
+        .oled-line {
+            white-space: pre;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <!-- Header -->
+        <div class="header">
+            <h1>🏭 传送带智能监控系统</h1>
+            <div class="connection-status">
+                <span class="status-dot" id="connectionDot"></span>
+                <span id="connectionText">未连接</span>
+            </div>
+        </div>
+
+        <!-- Alert Panel -->
+        <div class="alert-panel" id="alertPanel">
+            <div class="alert-panel-title">
+                ⚠️ <span id="alertTitle">告警信息</span>
+            </div>
+            <div class="alert-panel-content" id="alertContent"></div>
+        </div>
+
+        <!-- Status Indicators -->
+        <div class="status-indicators">
+            <div class="status-card" id="runningCard">
+                <div class="status-card-icon">⚙️</div>
+                <div class="status-card-label">运行状态</div>
+                <div class="status-card-value" id="runningStatus">停止</div>
+            </div>
+            <div class="status-card" id="jamCard">
+                <div class="status-card-icon">🔧</div>
+                <div class="status-card-label">卡住状态</div>
+                <div class="status-card-value" id="jamStatus">正常</div>
+            </div>
+            <div class="status-card" id="overweightCard">
+                <div class="status-card-icon">⚖️</div>
+                <div class="status-card-label">重量状态</div>
+                <div class="status-card-value" id="overweightStatus">正常</div>
+            </div>
+            <div class="status-card" id="overheatCard">
+                <div class="status-card-icon">🌡️</div>
+                <div class="status-card-label">温度状态</div>
+                <div class="status-card-value" id="overheatStatus">正常</div>
+            </div>
+        </div>
+
+        <!-- Display Panel - 显示与OLED相同的内容 -->
+        <div class="display-panel">
+            <div class="display-title">实时数据监控</div>
+
+            <!-- 重量显示 (对应 OLED_DisplayWeight) -->
+            <div class="display-row">
+                <span class="display-label">📦 重量</span>
+                <span>
+                    <span class="display-value" id="weightValue">0.0</span>
+                    <span style="color: #8b949e;"> 克</span>
+                    <span class="alert-badge alert-danger" id="weightAlert" style="display: none;">超重</span>
+                </span>
+            </div>
+
+            <!-- 温度显示 (对应 OLED_DisplayTemperature) -->
+            <div class="display-row">
+                <span class="display-label">🌡️ 温度</span>
+                <span>
+                    <span class="display-value" id="tempValue">0.0</span>
+                    <span style="color: #8b949e;"> ℃</span>
+                    <span class="alert-badge alert-danger" id="tempAlert" style="display: none;">过热</span>
+                </span>
+            </div>
+
+            <!-- 速度显示 (对应 OLED_DisplaySpeedAndTime) -->
+            <div class="display-row">
+                <span class="display-label">🔄 速度</span>
+                <span>
+                    <span class="display-value" id="speedValue">0</span>
+                    <span style="color: #8b949e;"> RPM</span>
+                </span>
+            </div>
+
+            <!-- 运行时间显示 (对应 OLED_DisplaySpeedAndTime) -->
+            <div class="display-row">
+                <span class="display-label">⏱️ 运行时间</span>
+                <span>
+                    <span class="display-value" id="timeValue">00:00</span>
+                </span>
+            </div>
+        </div>
+
+        <!-- OLED Simulation -->
+        <div class="display-panel">
+            <div class="display-title">OLED显示屏模拟</div>
+            <div class="oled-simulation">
+                <div class="oled-line" id="oledLine1">重量: 0.0克</div>
+                <div class="oled-line" id="oledLine2">状态: 停止</div>
+                <div class="oled-line" id="oledLine3">温度: 0.0℃</div>
+                <div class="oled-line" id="oledLine4">速度: 0 RPM  时间: 00:00</div>
+            </div>
+        </div>
+
+        <!-- Control Buttons -->
+        <div class="controls">
+            <button class="control-btn start" onclick="sendCommand('start')">
+                <span class="control-btn-icon">▶️</span>
+                <span>启动</span>
+            </button>
+            <button class="control-btn stop" onclick="sendCommand('stop')">
+                <span class="control-btn-icon">⏹️</span>
+                <span>停止</span>
+            </button>
+            <button class="control-btn mute" onclick="sendCommand('mute')">
+                <span class="control-btn-icon">🔇</span>
+                <span>静音</span>
+            </button>
+            <button class="control-btn clear" onclick="sendCommand('clear_jam')">
+                <span class="control-btn-icon">🔧</span>
+                <span>清除卡住</span>
+            </button>
+        </div>
+
+        <!-- Threshold Settings -->
+        <div class="threshold-section">
+            <div class="threshold-title">⚙️ 阈值设置</div>
+            <div class="threshold-row">
+                <span class="threshold-label">重量阈值</span>
+                <input type="number" class="threshold-input" id="weightThreshold" value="5000" placeholder="克">
+            </div>
+            <div class="threshold-row">
+                <span class="threshold-label">温度阈值</span>
+                <input type="number" class="threshold-input" id="tempThreshold" value="60" placeholder="℃">
+            </div>
+            <button class="threshold-btn" onclick="setThresholds()">应用阈值设置</button>
+        </div>
+    </div>
+
+    <!-- MQTT.js via CDN -->
+    <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
+    <script>
+        // MQTT Configuration - 与设备端配置对应
+        const MQTT_CONFIG = {
+            host: '192.168.43.230',  // MQTT服务器地址
+            port: 9001,               // WebSocket端口 (需要MQTT broker支持WebSocket)
+            clientId: 'mobile_app_' + Math.random().toString(16).substr(2, 8),
+            username: 'conveyor',
+            password: 'conveyor123',
+            topics: {
+                status: 'conveyor/status',    // 状态主题
+                control: 'conveyor/control',  // 控制主题
+                alert: 'conveyor/alert'       // 告警主题
+            }
+        };
+
+        let client = null;
+        let isConnected = false;
+
+        // DOM Elements
+        const connectionDot = document.getElementById('connectionDot');
+        const connectionText = document.getElementById('connectionText');
+        const weightValue = document.getElementById('weightValue');
+        const tempValue = document.getElementById('tempValue');
+        const speedValue = document.getElementById('speedValue');
+        const timeValue = document.getElementById('timeValue');
+        const weightAlert = document.getElementById('weightAlert');
+        const tempAlert = document.getElementById('tempAlert');
+        const runningStatus = document.getElementById('runningStatus');
+        const jamStatus = document.getElementById('jamStatus');
+        const overweightStatus = document.getElementById('overweightStatus');
+        const overheatStatus = document.getElementById('overheatStatus');
+        const runningCard = document.getElementById('runningCard');
+        const jamCard = document.getElementById('jamCard');
+        const overweightCard = document.getElementById('overweightCard');
+        const overheatCard = document.getElementById('overheatCard');
+        const alertPanel = document.getElementById('alertPanel');
+        const alertTitle = document.getElementById('alertTitle');
+        const alertContent = document.getElementById('alertContent');
+
+        // OLED simulation elements
+        const oledLine1 = document.getElementById('oledLine1');
+        const oledLine2 = document.getElementById('oledLine2');
+        const oledLine3 = document.getElementById('oledLine3');
+        const oledLine4 = document.getElementById('oledLine4');
+
+        // Initialize MQTT connection
+        function connectMQTT() {
+            const url = `ws://${MQTT_CONFIG.host}:${MQTT_CONFIG.port}/mqtt`;
+
+            console.log('Connecting to MQTT broker:', url);
+
+            client = mqtt.connect(url, {
+                clientId: MQTT_CONFIG.clientId,
+                username: MQTT_CONFIG.username,
+                password: MQTT_CONFIG.password,
+                clean: true,
+                reconnectPeriod: 3000
+            });
+
+            client.on('connect', function () {
+                console.log('Connected to MQTT broker');
+                isConnected = true;
+                updateConnectionStatus(true);
+
+                // Subscribe to topics
+                client.subscribe(MQTT_CONFIG.topics.status, function (err) {
+                    if (!err) {
+                        console.log('Subscribed to status topic');
+                    }
+                });
+
+                client.subscribe(MQTT_CONFIG.topics.alert, function (err) {
+                    if (!err) {
+                        console.log('Subscribed to alert topic');
+                    }
+                });
+            });
+
+            client.on('message', function (topic, message) {
+                const data = message.toString();
+                console.log('Received message:', topic, data);
+
+                try {
+                    const json = JSON.parse(data);
+
+                    if (topic === MQTT_CONFIG.topics.status) {
+                        updateStatusDisplay(json);
+                    } else if (topic === MQTT_CONFIG.topics.alert) {
+                        showAlert(json);
+                    }
+                } catch (e) {
+                    console.error('Error parsing message:', e);
+                }
+            });
+
+            client.on('error', function (err) {
+                console.error('MQTT error:', err);
+                isConnected = false;
+                updateConnectionStatus(false);
+            });
+
+            client.on('close', function () {
+                console.log('MQTT connection closed');
+                isConnected = false;
+                updateConnectionStatus(false);
+            });
+
+            client.on('reconnect', function () {
+                console.log('Reconnecting to MQTT broker...');
+            });
+        }
+
+        // Update connection status display
+        function updateConnectionStatus(connected) {
+            if (connected) {
+                connectionDot.classList.add('connected');
+                connectionText.textContent = '已连接';
+            } else {
+                connectionDot.classList.remove('connected');
+                connectionText.textContent = '未连接';
+            }
+        }
+
+        // Update status display from MQTT message
+        // 对应 MQTT_PublishStatus 发送的数据:
+        // {"weight":%.1f,"temp":%.1f,"speed":%.1f,"running":%d,"time":%u}
+        function updateStatusDisplay(data) {
+            // 重量 (对应 OLED_DisplayWeight)
+            if (data.weight !== undefined) {
+                weightValue.textContent = data.weight.toFixed(1);
+            }
+
+            // 温度 (对应 OLED_DisplayTemperature)
+            if (data.temp !== undefined) {
+                tempValue.textContent = data.temp.toFixed(1);
+            }
+
+            // 速度 (对应 OLED_DisplaySpeedAndTime)
+            if (data.speed !== undefined) {
+                speedValue.textContent = Math.round(data.speed);
+            }
+
+            // 运行时间 (对应 OLED_DisplaySpeedAndTime)
+            if (data.time !== undefined) {
+                const minutes = Math.floor(data.time / 60);
+                const seconds = data.time % 60;
+                timeValue.textContent = `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+            }
+
+            // 运行状态 (对应 OLED_DisplayConveyorStatus)
+            if (data.running !== undefined) {
+                const isRunning = data.running === 1;
+                runningStatus.textContent = isRunning ? '运行中' : '停止';
+                runningCard.classList.toggle('active', isRunning);
+            }
+
+            // Update OLED simulation
+            updateOLEDSimulation(data);
+        }
+
+        // Update OLED simulation display - 模拟OLED显示屏的内容
+        function updateOLEDSimulation(data) {
+            const weight = data.weight !== undefined ? data.weight.toFixed(1) : '0.0';
+            const isOverweight = parseFloat(weight) > parseFloat(document.getElementById('weightThreshold').value);
+            const overweightStr = isOverweight ? ' [超重]' : '';
+
+            const running = data.running === 1;
+            const runningStr = running ? '运行中' : '停止';
+            const jamStr = jamCard.classList.contains('alert') ? ' [卡住!]' : '';
+
+            const temp = data.temp !== undefined ? data.temp.toFixed(1) : '0.0';
+            const isOverheat = parseFloat(temp) > parseFloat(document.getElementById('tempThreshold').value);
+            const overheatStr = isOverheat ? ' [过热]' : '';
+
+            const speed = data.speed !== undefined ? Math.round(data.speed) : 0;
+            const time = data.time !== undefined ? data.time : 0;
+            const minutes = Math.floor(time / 60);
+            const seconds = time % 60;
+            const timeStr = `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+
+            // 模拟OLED显示 (对应C代码中的显示函数)
+            // Line 0: Weight - 对应 OLED_DisplayWeight
+            oledLine1.textContent = `重量: ${weight}克${overweightStr}`;
+
+            // Line 2: Status - 对应 OLED_DisplayConveyorStatus
+            oledLine2.textContent = `状态: ${runningStr}${jamStr}`;
+
+            // Line 4: Temperature - 对应 OLED_DisplayTemperature
+            oledLine3.textContent = `温度: ${temp}℃${overheatStr}`;
+
+            // Line 6: Speed and Time - 对应 OLED_DisplaySpeedAndTime
+            oledLine4.textContent = `速度: ${speed} RPM  时间: ${timeStr}`;
+        }
+
+        // Show alert notification
+        // 对应 MQTT_PublishAlert 发送的数据:
+        // {"alert":"%s","value":%.1f}
+        function showAlert(data) {
+            alertPanel.classList.add('show');
+
+            let alertTypeText = '';
+            let alertValueText = '';
+
+            switch (data.alert) {
+                case 'overweight':
+                    alertTypeText = '超重告警';
+                    alertValueText = `当前重量: ${data.value.toFixed(1)}克，已超过阈值`;
+                    overweightStatus.textContent = '超重';
+                    overweightCard.classList.add('alert');
+                    weightAlert.style.display = 'inline-block';
+                    break;
+                case 'overheat':
+                    alertTypeText = '过热告警';
+                    alertValueText = `当前温度: ${data.value.toFixed(1)}℃，已超过阈值`;
+                    overheatStatus.textContent = '过热';
+                    overheatCard.classList.add('alert');
+                    tempAlert.style.display = 'inline-block';
+                    break;
+                case 'jam':
+                    alertTypeText = '卡住告警';
+                    alertValueText = '传送带检测到卡住，请处理';
+                    jamStatus.textContent = '卡住';
+                    jamCard.classList.add('alert');
+                    break;
+                default:
+                    alertTypeText = '未知告警';
+                    alertValueText = JSON.stringify(data);
+            }
+
+            alertTitle.textContent = alertTypeText;
+            alertContent.textContent = alertValueText;
+
+            // Auto hide after 10 seconds
+            setTimeout(function() {
+                alertPanel.classList.remove('show');
+            }, 10000);
+        }
+
+        // Send control command to conveyor
+        // 对应 wifi_mqtt.h 中定义的控制命令
+        function sendCommand(cmd) {
+            if (!isConnected || !client) {
+                alert('未连接到服务器，请检查网络连接');
+                return;
+            }
+
+            console.log('Sending command:', cmd);
+            client.publish(MQTT_CONFIG.topics.control, cmd);
+
+            // Update local UI immediately for better UX
+            switch (cmd) {
+                case 'start':
+                    runningStatus.textContent = '运行中';
+                    runningCard.classList.add('active');
+                    break;
+                case 'stop':
+                    runningStatus.textContent = '停止';
+                    runningCard.classList.remove('active');
+                    break;
+                case 'clear_jam':
+                    jamStatus.textContent = '正常';
+                    jamCard.classList.remove('alert');
+                    break;
+            }
+        }
+
+        // Set thresholds
+        // 对应 CMD_SET_WEIGHT_THRESHOLD 和 CMD_SET_TEMP_THRESHOLD
+        function setThresholds() {
+            if (!isConnected || !client) {
+                alert('未连接到服务器，请检查网络连接');
+                return;
+            }
+
+            const weightThreshold = document.getElementById('weightThreshold').value;
+            const tempThreshold = document.getElementById('tempThreshold').value;
+
+            // Send weight threshold command
+            client.publish(MQTT_CONFIG.topics.control, `set_weight:${weightThreshold}`);
+
+            // Send temperature threshold command
+            client.publish(MQTT_CONFIG.topics.control, `set_temp:${tempThreshold}`);
+
+            alert(`阈值设置已发送\n重量阈值: ${weightThreshold}克\n温度阈值: ${tempThreshold}℃`);
+        }
+
+        // Demo mode - simulate data for testing when not connected
+        function startDemoMode() {
+            console.log('Starting demo mode...');
+
+            let demoData = {
+                weight: 100,
+                temp: 25,
+                speed: 60,
+                running: 1,
+                time: 0
+            };
+
+            setInterval(function() {
+                // Simulate changing values
+                demoData.weight = Math.max(0, demoData.weight + (Math.random() - 0.5) * 50);
+                demoData.temp = Math.max(20, Math.min(70, demoData.temp + (Math.random() - 0.5) * 2));
+                demoData.speed = demoData.running === 1 ? 60 + Math.random() * 20 : 0;
+                demoData.time = demoData.running === 1 ? demoData.time + 1 : demoData.time;
+
+                updateStatusDisplay(demoData);
+
+                // Random alerts
+                if (Math.random() < 0.01 && demoData.weight > 4000) {
+                    showAlert({ alert: 'overweight', value: demoData.weight });
+                }
+            }, 1000);
+        }
+
+        // Initialize
+        document.addEventListener('DOMContentLoaded', function() {
+            console.log('Conveyor Belt Mobile App initialized');
+
+            // Try to connect to MQTT
+            connectMQTT();
+
+            // If not connected after 5 seconds, start demo mode
+            setTimeout(function() {
+                if (!isConnected) {
+                    console.log('MQTT connection failed, starting demo mode');
+                    startDemoMode();
+                }
+            }, 5000);
+        });
+    </script>
+</body>
+</html>
