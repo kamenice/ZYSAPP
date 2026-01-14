@@ -13,7 +13,7 @@
  * limitations under the License.
  */
 
-import mqtt from '@ohos/mqtt'
+import socket from '@ohos.net.socket'
 
 // MQTT配置 - 与wifi_mqtt.h保持一致，实际部署时应从配置文件读取
 const MQTT_HOST: string = '192.168.43.230'
@@ -37,6 +37,61 @@ interface AlertData {
   value: number        // 告警值
 }
 
+// MQTT数据包类型
+const MQTT_CONNECT: number = 0x10
+const MQTT_CONNACK: number = 0x20
+const MQTT_PUBLISH: number = 0x30
+const MQTT_SUBSCRIBE: number = 0x82
+const MQTT_SUBACK: number = 0x90
+const MQTT_PINGREQ: number = 0xC0
+const MQTT_PINGRESP: number = 0xD0
+const MQTT_DISCONNECT: number = 0xE0
+
+// 字符串转UTF-8字节数组
+function stringToUtf8Bytes(str: string): number[] {
+  const bytes: number[] = []
+  for (let i = 0; i < str.length; i++) {
+    const code = str.charCodeAt(i)
+    if (code < 0x80) {
+      bytes.push(code)
+    } else if (code < 0x800) {
+      bytes.push(0xC0 | (code >> 6))
+      bytes.push(0x80 | (code & 0x3F))
+    } else if (code < 0x10000) {
+      bytes.push(0xE0 | (code >> 12))
+      bytes.push(0x80 | ((code >> 6) & 0x3F))
+      bytes.push(0x80 | (code & 0x3F))
+    }
+  }
+  return bytes
+}
+
+// UTF-8字节数组转字符串
+function utf8BytesToString(bytes: Uint8Array, start: number, length: number): string {
+  let result = ''
+  let i = start
+  const end = start + length
+  while (i < end) {
+    const byte1 = bytes[i]
+    if (byte1 < 0x80) {
+      result += String.fromCharCode(byte1)
+      i++
+    } else if ((byte1 & 0xE0) === 0xC0) {
+      const byte2 = bytes[i + 1]
+      result += String.fromCharCode(((byte1 & 0x1F) << 6) | (byte2 & 0x3F))
+      i += 2
+    } else if ((byte1 & 0xF0) === 0xE0) {
+      const byte2 = bytes[i + 1]
+      const byte3 = bytes[i + 2]
+      result += String.fromCharCode(((byte1 & 0x0F) << 12) | ((byte2 & 0x3F) << 6) | (byte3 & 0x3F))
+      i += 3
+    } else {
+      i++
+    }
+  }
+  return result
+}
+
 @Entry
 @Component
 struct ConveyorMonitor {
@@ -57,8 +112,10 @@ struct ConveyorMonitor {
   @State isConnected: boolean = false
   @State connectionStatus: string = '未连接'
 
-  // MQTT客户端
-  private mqttClient: mqtt.MqttClient | null = null
+  // TCP Socket
+  private tcpSocket: socket.TCPSocket | null = null
+  private messageId: number = 1
+  private keepAliveTimer: number = -1
 
   aboutToAppear(): void {
     this.connectMqtt()
@@ -68,55 +125,268 @@ struct ConveyorMonitor {
     this.disconnectMqtt()
   }
 
-  // 连接MQTT服务器
-  connectMqtt(): void {
+  // 编码剩余长度 (MQTT协议)
+  encodeRemainingLength(length: number): number[] {
+    const bytes: number[] = []
+    do {
+      let byte = length % 128
+      length = Math.floor(length / 128)
+      if (length > 0) {
+        byte = byte | 0x80
+      }
+      bytes.push(byte)
+    } while (length > 0)
+    return bytes
+  }
+
+  // 编码MQTT字符串 (长度前缀 + UTF-8字节)
+  encodeString(str: string): number[] {
+    const bytes = stringToUtf8Bytes(str)
+    const len = bytes.length
+    return [Math.floor(len / 256), len % 256, ...bytes]
+  }
+
+  // 构建CONNECT数据包
+  buildConnectPacket(): ArrayBuffer {
+    const clientId = 'arkts_' + Date.now().toString()
+    const username = 'conveyor'
+    const password = 'conveyor123'
+
+    // 可变头部
+    const protocolName = this.encodeString('MQTT')
+    const protocolLevel = 0x04  // MQTT 3.1.1
+    const connectFlags = 0xC2   // Username, Password, Clean Session
+    const keepAlive = [0x00, 0x3C]  // 60秒
+
+    // 有效载荷
+    const clientIdBytes = this.encodeString(clientId)
+    const usernameBytes = this.encodeString(username)
+    const passwordBytes = this.encodeString(password)
+
+    const variableHeader = [...protocolName, protocolLevel, connectFlags, ...keepAlive]
+    const payload = [...clientIdBytes, ...usernameBytes, ...passwordBytes]
+    const remainingLength = this.encodeRemainingLength(variableHeader.length + payload.length)
+
+    const packet = new Uint8Array([MQTT_CONNECT, ...remainingLength, ...variableHeader, ...payload])
+    return packet.buffer
+  }
+
+  // 构建SUBSCRIBE数据包
+  buildSubscribePacket(topic: string): ArrayBuffer {
+    const packetId = [Math.floor(this.messageId / 256), this.messageId % 256]
+    this.messageId++
+
+    const topicBytes = this.encodeString(topic)
+    const qos = 0x00
+
+    const payload = [...topicBytes, qos]
+    const remainingLength = this.encodeRemainingLength(2 + payload.length)
+
+    const packet = new Uint8Array([MQTT_SUBSCRIBE, ...remainingLength, ...packetId, ...payload])
+    return packet.buffer
+  }
+
+  // 构建PUBLISH数据包
+  buildPublishPacket(topic: string, message: string): ArrayBuffer {
+    const topicBytes = this.encodeString(topic)
+    const messageBytes = stringToUtf8Bytes(message)
+
+    const remainingLength = this.encodeRemainingLength(topicBytes.length + messageBytes.length)
+
+    const packet = new Uint8Array([MQTT_PUBLISH, ...remainingLength, ...topicBytes, ...messageBytes])
+    return packet.buffer
+  }
+
+  // 构建PINGREQ数据包
+  buildPingPacket(): ArrayBuffer {
+    return new Uint8Array([MQTT_PINGREQ, 0x00]).buffer
+  }
+
+  // 构建DISCONNECT数据包
+  buildDisconnectPacket(): ArrayBuffer {
+    return new Uint8Array([MQTT_DISCONNECT, 0x00]).buffer
+  }
+
+  // 解析PUBLISH消息
+  parsePublishMessage(data: Uint8Array, startIndex: number, remainingLength: number): void {
     try {
-      // 凭证与wifi_mqtt.h保持一致，实际部署时应从安全存储读取
-      const options: mqtt.MqttConnectOptions = {
-        host: MQTT_HOST,
-        port: MQTT_PORT,
-        clientId: 'arkts_conveyor_monitor_' + Date.now(),
-        username: 'conveyor',
-        password: 'conveyor123',
-        keepalive: 60
+      // 读取主题长度
+      const topicLen = (data[startIndex] << 8) | data[startIndex + 1]
+      const topic = utf8BytesToString(data, startIndex + 2, topicLen)
+
+      // 读取消息内容
+      const messageStart = startIndex + 2 + topicLen
+      const messageLen = remainingLength - 2 - topicLen
+      const message = utf8BytesToString(data, messageStart, messageLen)
+
+      this.handleMessage(topic, message)
+    } catch (error) {
+      console.error('解析PUBLISH消息错误:', error)
+    }
+  }
+
+  // 处理接收到的数据
+  handleReceivedData(data: ArrayBuffer): void {
+    const bytes = new Uint8Array(data)
+
+    let index = 0
+    while (index < bytes.length) {
+      const packetType = bytes[index] & 0xF0
+
+      // 解析剩余长度
+      let multiplier = 1
+      let remainingLength = 0
+      let lengthIndex = index + 1
+      let encodedByte: number
+      do {
+        if (lengthIndex >= bytes.length) return
+        encodedByte = bytes[lengthIndex]
+        remainingLength += (encodedByte & 127) * multiplier
+        multiplier *= 128
+        lengthIndex++
+      } while ((encodedByte & 128) !== 0)
+
+      const headerLength = lengthIndex - index
+      const totalLength = headerLength + remainingLength
+
+      if (index + totalLength > bytes.length) return
+
+      switch (packetType) {
+        case MQTT_CONNACK:
+          if (remainingLength >= 2 && bytes[index + headerLength + 1] === 0) {
+            this.isConnected = true
+            this.connectionStatus = '已连接'
+            // 订阅主题
+            this.subscribe(MQTT_TOPIC_STATUS)
+            this.subscribe(MQTT_TOPIC_ALERT)
+            // 启动心跳
+            this.startKeepAlive()
+          } else {
+            this.connectionStatus = '连接被拒绝'
+          }
+          break
+        case MQTT_PUBLISH:
+          this.parsePublishMessage(bytes, index + headerLength, remainingLength)
+          break
+        case MQTT_SUBACK:
+          console.info('订阅确认')
+          break
+        case MQTT_PINGRESP:
+          console.info('心跳响应')
+          break
       }
 
-      this.mqttClient = mqtt.createClient(options)
+      index += totalLength
+    }
+  }
 
-      this.mqttClient.on('connect', () => {
-        this.isConnected = true
-        this.connectionStatus = '已连接'
-        // 订阅状态和告警主题
-        this.mqttClient?.subscribe(MQTT_TOPIC_STATUS)
-        this.mqttClient?.subscribe(MQTT_TOPIC_ALERT)
+  // 连接MQTT服务器
+  async connectMqtt(): Promise<void> {
+    try {
+      this.connectionStatus = '连接中...'
+      this.tcpSocket = socket.constructTCPSocketInstance()
+
+      // 监听消息
+      this.tcpSocket.on('message', (value: socket.SocketMessageInfo) => {
+        this.handleReceivedData(value.message)
       })
 
-      this.mqttClient.on('message', (topic: string, message: string) => {
-        this.handleMessage(topic, message)
-      })
-
-      this.mqttClient.on('error', (error: Error) => {
-        this.isConnected = false
-        this.connectionStatus = '连接错误: ' + error.message
-      })
-
-      this.mqttClient.on('close', () => {
+      // 监听连接状态
+      this.tcpSocket.on('close', () => {
         this.isConnected = false
         this.connectionStatus = '连接已断开'
+        this.stopKeepAlive()
       })
 
-      this.mqttClient.connect()
+      // 监听错误
+      this.tcpSocket.on('error', (err: Error) => {
+        this.isConnected = false
+        this.connectionStatus = '连接错误'
+        console.error('Socket错误:', err)
+      })
+
+      // 连接服务器
+      await this.tcpSocket.connect({
+        address: {
+          address: MQTT_HOST,
+          port: MQTT_PORT,
+          family: 1  // IPv4
+        },
+        timeout: 10000
+      })
+
+      // 发送CONNECT数据包
+      const connectPacket = this.buildConnectPacket()
+      await this.tcpSocket.send({ data: connectPacket })
+
     } catch (error) {
       this.connectionStatus = '连接失败'
+      console.error('连接MQTT失败:', error)
+    }
+  }
+
+  // 订阅主题
+  async subscribe(topic: string): Promise<void> {
+    if (this.tcpSocket && this.isConnected) {
+      try {
+        const packet = this.buildSubscribePacket(topic)
+        await this.tcpSocket.send({ data: packet })
+      } catch (error) {
+        console.error('订阅失败:', error)
+      }
+    }
+  }
+
+  // 发送控制命令
+  async sendCommand(command: string): Promise<void> {
+    if (this.tcpSocket && this.isConnected) {
+      try {
+        const packet = this.buildPublishPacket(MQTT_TOPIC_CONTROL, command)
+        await this.tcpSocket.send({ data: packet })
+      } catch (error) {
+        console.error('发送命令失败:', error)
+      }
+    }
+  }
+
+  // 启动心跳定时器
+  startKeepAlive(): void {
+    this.keepAliveTimer = setInterval(async () => {
+      if (this.tcpSocket && this.isConnected) {
+        try {
+          const packet = this.buildPingPacket()
+          await this.tcpSocket.send({ data: packet })
+        } catch (error) {
+          console.error('心跳发送失败:', error)
+        }
+      }
+    }, 30000)  // 30秒发送一次心跳
+  }
+
+  // 停止心跳定时器
+  stopKeepAlive(): void {
+    if (this.keepAliveTimer !== -1) {
+      clearInterval(this.keepAliveTimer)
+      this.keepAliveTimer = -1
     }
   }
 
   // 断开MQTT连接
-  disconnectMqtt(): void {
-    if (this.mqttClient) {
-      this.mqttClient.disconnect()
-      this.mqttClient = null
+  async disconnectMqtt(): Promise<void> {
+    this.stopKeepAlive()
+    if (this.tcpSocket) {
+      try {
+        if (this.isConnected) {
+          const packet = this.buildDisconnectPacket()
+          await this.tcpSocket.send({ data: packet })
+        }
+        await this.tcpSocket.close()
+      } catch (error) {
+        console.error('断开连接错误:', error)
+      }
+      this.tcpSocket = null
     }
+    this.isConnected = false
   }
 
   // 处理MQTT消息
@@ -129,6 +399,10 @@ struct ConveyorMonitor {
         this.speed = status.speed
         this.isRunning = status.running === 1
         this.runTimeSeconds = status.time
+        // 清除之前的告警状态
+        this.isOverweight = false
+        this.isOverheat = false
+        this.isJammed = false
       } else if (topic === MQTT_TOPIC_ALERT) {
         const alert: AlertData = JSON.parse(message)
         this.handleAlert(alert)
@@ -153,13 +427,6 @@ struct ConveyorMonitor {
         this.isJammed = true
         this.lastAlert = '堵塞告警'
         break
-    }
-  }
-
-  // 发送控制命令
-  sendCommand(command: string): void {
-    if (this.mqttClient && this.isConnected) {
-      this.mqttClient.publish(MQTT_TOPIC_CONTROL, command)
     }
   }
 
@@ -369,7 +636,6 @@ struct ConveyorMonitor {
           .backgroundColor('#9C27B0')
           .onClick(() => {
             this.sendCommand('clear_jam')
-            // 堵塞状态将在收到MQTT状态更新后自动清除
           })
       }
       .width('100%')
