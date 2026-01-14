@@ -47,11 +47,24 @@ const MQTT_PINGREQ: number = 0xC0
 const MQTT_PINGRESP: number = 0xD0
 const MQTT_DISCONNECT: number = 0xE0
 
-// 字符串转UTF-8字节数组
+// 字符串转UTF-8字节数组 (处理BMP字符，支持中文)
 function stringToUtf8Bytes(str: string): number[] {
   const bytes: number[] = []
   for (let i = 0; i < str.length; i++) {
-    const code = str.charCodeAt(i)
+    let code = str.charCodeAt(i)
+    // 处理代理对 (surrogate pairs) - 4字节UTF-8
+    if (code >= 0xD800 && code <= 0xDBFF && i + 1 < str.length) {
+      const lowSurrogate = str.charCodeAt(i + 1)
+      if (lowSurrogate >= 0xDC00 && lowSurrogate <= 0xDFFF) {
+        code = 0x10000 + ((code - 0xD800) << 10) + (lowSurrogate - 0xDC00)
+        bytes.push(0xF0 | (code >> 18))
+        bytes.push(0x80 | ((code >> 12) & 0x3F))
+        bytes.push(0x80 | ((code >> 6) & 0x3F))
+        bytes.push(0x80 | (code & 0x3F))
+        i++ // 跳过低代理
+        continue
+      }
+    }
     if (code < 0x80) {
       bytes.push(code)
     } else if (code < 0x800) {
@@ -66,7 +79,7 @@ function stringToUtf8Bytes(str: string): number[] {
   return bytes
 }
 
-// UTF-8字节数组转字符串
+// UTF-8字节数组转字符串 (带边界检查)
 function utf8BytesToString(bytes: Uint8Array, start: number, length: number): string {
   let result = ''
   let i = start
@@ -76,17 +89,26 @@ function utf8BytesToString(bytes: Uint8Array, start: number, length: number): st
     if (byte1 < 0x80) {
       result += String.fromCharCode(byte1)
       i++
-    } else if ((byte1 & 0xE0) === 0xC0) {
+    } else if ((byte1 & 0xE0) === 0xC0 && i + 1 < end) {
       const byte2 = bytes[i + 1]
       result += String.fromCharCode(((byte1 & 0x1F) << 6) | (byte2 & 0x3F))
       i += 2
-    } else if ((byte1 & 0xF0) === 0xE0) {
+    } else if ((byte1 & 0xF0) === 0xE0 && i + 2 < end) {
       const byte2 = bytes[i + 1]
       const byte3 = bytes[i + 2]
       result += String.fromCharCode(((byte1 & 0x0F) << 12) | ((byte2 & 0x3F) << 6) | (byte3 & 0x3F))
       i += 3
+    } else if ((byte1 & 0xF8) === 0xF0 && i + 3 < end) {
+      // 4字节UTF-8 -> 代理对
+      const byte2 = bytes[i + 1]
+      const byte3 = bytes[i + 2]
+      const byte4 = bytes[i + 3]
+      const codePoint = ((byte1 & 0x07) << 18) | ((byte2 & 0x3F) << 12) | ((byte3 & 0x3F) << 6) | (byte4 & 0x3F)
+      const adjusted = codePoint - 0x10000
+      result += String.fromCharCode(0xD800 + (adjusted >> 10), 0xDC00 + (adjusted & 0x3FF))
+      i += 4
     } else {
-      i++
+      i++ // 跳过无效字节
     }
   }
   return result
@@ -116,6 +138,7 @@ struct ConveyorMonitor {
   private tcpSocket: socket.TCPSocket | null = null
   private messageId: number = 1
   private keepAliveTimer: number = -1
+  private isPingSending: boolean = false  // 防止心跳重叠
 
   aboutToAppear(): void {
     this.connectMqtt()
@@ -239,7 +262,11 @@ struct ConveyorMonitor {
       let lengthIndex = index + 1
       let encodedByte: number
       do {
-        if (lengthIndex >= bytes.length) return
+        if (lengthIndex >= bytes.length) {
+          // 数据不完整，等待更多数据
+          console.info('等待更多数据包...')
+          return
+        }
         encodedByte = bytes[lengthIndex]
         remainingLength += (encodedByte & 127) * multiplier
         multiplier *= 128
@@ -249,7 +276,11 @@ struct ConveyorMonitor {
       const headerLength = lengthIndex - index
       const totalLength = headerLength + remainingLength
 
-      if (index + totalLength > bytes.length) return
+      if (index + totalLength > bytes.length) {
+        // 数据包不完整，等待更多数据
+        console.info('数据包不完整，等待更多数据...')
+        return
+      }
 
       switch (packetType) {
         case MQTT_CONNACK:
@@ -352,12 +383,19 @@ struct ConveyorMonitor {
   // 启动心跳定时器
   startKeepAlive(): void {
     this.keepAliveTimer = setInterval(async () => {
+      // 防止心跳重叠发送
+      if (this.isPingSending) {
+        return
+      }
       if (this.tcpSocket && this.isConnected) {
+        this.isPingSending = true
         try {
           const packet = this.buildPingPacket()
           await this.tcpSocket.send({ data: packet })
         } catch (error) {
           console.error('心跳发送失败:', error)
+        } finally {
+          this.isPingSending = false
         }
       }
     }, 30000)  // 30秒发送一次心跳
@@ -369,6 +407,7 @@ struct ConveyorMonitor {
       clearInterval(this.keepAliveTimer)
       this.keepAliveTimer = -1
     }
+    this.isPingSending = false
   }
 
   // 断开MQTT连接
