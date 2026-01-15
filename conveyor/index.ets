@@ -2,19 +2,24 @@
  * Smart Conveyor Belt System - ArkTS UI
  *
  * This UI interfaces with the code9 Smart Conveyor Belt System
- * via HTTP polling (requires HTTP server on PC side).
+ * via MQTT protocol over WiFi.
  *
  * WiFi: zys / 12345678
  * Server IP: 192.168.43.230
- * HTTP Port: 8080
+ * MQTT Port: 1883
+ * MQTT Topic: conveyor
+ *
+ * Note: Requires @ohos/mqtt package. Install with: ohpm install @ohos/mqtt
+ * And add INTERNET permission in module.json5
  */
 
-import http from '@ohos.net.http';
+import { MqttAsync, MqttConnectOptions, MqttSubscribeOptions, MqttClient } from '@ohos/mqtt';
 
-// Server Configuration
-const SERVER_HOST: string = '192.168.43.230';
-const SERVER_PORT: number = 8080;
-const POLL_INTERVAL: number = 2000; // Poll every 2 seconds
+// MQTT Configuration
+const MQTT_HOST: string = '192.168.43.230';
+const MQTT_PORT: number = 1883;
+const MQTT_TOPIC: string = 'conveyor';
+const MQTT_CLIENT_ID: string = 'arkts_conveyor_app';
 
 // WiFi Configuration
 const WIFI_SSID: string = 'zys';
@@ -39,107 +44,134 @@ struct Index {
   @State connectionStatus: string = '未连接';
   @State lastUpdate: string = '--:--:--';
 
-  // HTTP client and polling timer
-  private httpRequest: http.HttpRequest | null = null;
-  private pollingTimer: number | null = null;
+  // MQTT client instance
+  private mqttClient: MqttClient | null = null;
 
   // Temperature threshold (same as code9: 30°C)
   private readonly TEMP_THRESHOLD: number = 30.0;
 
   aboutToAppear(): void {
-    this.startPolling();
+    this.connectMqtt();
   }
 
   aboutToDisappear(): void {
-    this.stopPolling();
+    this.disconnectMqtt();
   }
 
-  // Start HTTP polling
-  private startPolling(): void {
+  // Connect to MQTT broker
+  private connectMqtt(): void {
     this.connectionStatus = '连接中...';
-    this.httpRequest = http.createHttp();
-    this.fetchData();
 
-    // Set up periodic polling
-    this.pollingTimer = setInterval(() => {
-      this.fetchData();
-    }, POLL_INTERVAL);
+    // Create MQTT client
+    this.mqttClient = MqttAsync.createMqtt({
+      url: `tcp://${MQTT_HOST}:${MQTT_PORT}`,
+      clientId: MQTT_CLIENT_ID,
+      persistenceType: 1
+    });
+
+    // Set up message callback
+    this.mqttClient.on('messageArrived', (topic: string, payload: string) => {
+      this.handleMessage(topic, payload);
+    });
+
+    // Set up connection lost callback
+    this.mqttClient.on('connectLost', () => {
+      console.info('[MQTT] Connection lost');
+      this.isConnected = false;
+      this.connectionStatus = '连接断开';
+    });
+
+    // Connect to broker
+    const connectOptions: MqttConnectOptions = {
+      cleanSession: true,
+      connectTimeout: 30,
+      keepAliveInterval: 60,
+      userName: 'hi3861',
+      password: 'password'
+    };
+
+    this.mqttClient.connect(connectOptions)
+      .then(() => {
+        console.info('[MQTT] Connected to broker');
+        this.isConnected = true;
+        this.connectionStatus = '已连接';
+        this.subscribeToTopic();
+      })
+      .catch((err: Error) => {
+        console.error('[MQTT] Connection failed: ' + err.message);
+        this.isConnected = false;
+        this.connectionStatus = '连接失败';
+      });
   }
 
-  // Fetch data from HTTP server
-  private fetchData(): void {
-    if (!this.httpRequest) {
+  // Subscribe to conveyor topic
+  private subscribeToTopic(): void {
+    if (!this.mqttClient) {
       return;
     }
 
-    const url = `http://${SERVER_HOST}:${SERVER_PORT}/conveyor`;
+    const subscribeOptions: MqttSubscribeOptions = {
+      topic: MQTT_TOPIC,
+      qos: 0
+    };
 
-    this.httpRequest.request(url, {
-      method: http.RequestMethod.GET,
-      header: {
-        'Content-Type': 'application/json'
-      },
-      connectTimeout: 5000,
-      readTimeout: 5000
-    }).then((response: http.HttpResponse) => {
-      if (response.responseCode === 200) {
-        this.isConnected = true;
-        this.connectionStatus = '已连接';
-        this.parseResponse(response.result as string);
-      } else {
-        this.isConnected = false;
-        this.connectionStatus = '服务器错误';
+    this.mqttClient.subscribe(subscribeOptions)
+      .then(() => {
+        console.info('[MQTT] Subscribed to topic: ' + MQTT_TOPIC);
+      })
+      .catch((err: Error) => {
+        console.error('[MQTT] Subscribe failed: ' + err.message);
+      });
+  }
+
+  // Handle incoming MQTT message
+  private handleMessage(topic: string, payload: string): void {
+    if (topic === MQTT_TOPIC) {
+      try {
+        const data: ConveyorStatus = JSON.parse(payload);
+
+        // Update UI state
+        this.hasItem = data.hasItem === 1;
+        this.temperature = data.temperature;
+        this.motorRunning = data.motorState === 1;
+        this.overTemp = data.temperature > this.TEMP_THRESHOLD;
+
+        // Update timestamp
+        const now = new Date();
+        const hours = now.getHours().toString().padStart(2, '0');
+        const minutes = now.getMinutes().toString().padStart(2, '0');
+        const seconds = now.getSeconds().toString().padStart(2, '0');
+        this.lastUpdate = `${hours}:${minutes}:${seconds}`;
+
+        console.info(`[MQTT] Data received - Item: ${this.hasItem}, Temp: ${this.temperature}, Motor: ${this.motorRunning}`);
+      } catch (error) {
+        console.error('[MQTT] Parse error: ' + error);
       }
-    }).catch((err: Error) => {
-      console.error('[HTTP] Request failed: ' + err.message);
-      this.isConnected = false;
-      this.connectionStatus = '连接失败';
-    });
-  }
-
-  // Parse server response
-  private parseResponse(jsonStr: string): void {
-    try {
-      const data: ConveyorStatus = JSON.parse(jsonStr);
-
-      // Update UI state
-      this.hasItem = data.hasItem === 1;
-      this.temperature = data.temperature;
-      this.motorRunning = data.motorState === 1;
-      this.overTemp = data.temperature > this.TEMP_THRESHOLD;
-
-      // Update timestamp
-      const now = new Date();
-      const hours = now.getHours().toString().padStart(2, '0');
-      const minutes = now.getMinutes().toString().padStart(2, '0');
-      const seconds = now.getSeconds().toString().padStart(2, '0');
-      this.lastUpdate = `${hours}:${minutes}:${seconds}`;
-
-      console.info(`[HTTP] Data received - Item: ${this.hasItem}, Temp: ${this.temperature}, Motor: ${this.motorRunning}`);
-    } catch (error) {
-      console.error('[HTTP] Parse error: ' + error);
     }
   }
 
-  // Stop HTTP polling
-  private stopPolling(): void {
-    if (this.pollingTimer !== null) {
-      clearInterval(this.pollingTimer);
-      this.pollingTimer = null;
-    }
-    if (this.httpRequest) {
-      this.httpRequest.destroy();
-      this.httpRequest = null;
+  // Disconnect from MQTT broker
+  private disconnectMqtt(): void {
+    if (this.mqttClient) {
+      const client = this.mqttClient;
+      this.mqttClient = null;
+      client.disconnect()
+        .then(() => {
+          console.info('[MQTT] Disconnected');
+        })
+        .catch((err: Error) => {
+          console.error('[MQTT] Disconnect error: ' + err.message);
+        });
     }
   }
 
-  // Reconnect to server
+  // Reconnect to MQTT broker
   private reconnect(): void {
-    this.stopPolling();
+    this.disconnectMqtt();
     this.connectionStatus = '重新连接中...';
     this.isConnected = false;
     setTimeout(() => {
-      this.startPolling();
+      this.connectMqtt();
     }, 1000);
   }
 
@@ -219,7 +251,11 @@ struct Index {
           .fontSize(14)
           .fontColor('#666666')
 
-        Text(`服务器: ${SERVER_HOST}:${SERVER_PORT}`)
+        Text(`服务器: ${MQTT_HOST}:${MQTT_PORT}`)
+          .fontSize(14)
+          .fontColor('#666666')
+
+        Text(`主题: ${MQTT_TOPIC}`)
           .fontSize(14)
           .fontColor('#666666')
       }
