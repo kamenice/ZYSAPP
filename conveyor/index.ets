@@ -11,7 +11,7 @@
  */
 
 import mqtt from '@ohos.net.mqtt';
-import wifi from '@ohos.wifi';
+import util from '@ohos.util';
 
 // MQTT Configuration
 const MQTT_HOST: string = '192.168.43.230';
