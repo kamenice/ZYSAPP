@@ -13,7 +13,7 @@
  * And add INTERNET permission in module.json5
  */
 
-import { MqttAsync, MqttConnectOptions, MqttSubscribeOptions, MqttClient } from '@ohos/mqtt';
+import { MqttAsync, MqttConnectOptions, MqttSubscribeOptions, MqttMessage } from '@ohos/mqtt';
 
 // MQTT Configuration
 const MQTT_HOST: string = '192.168.43.230';
@@ -25,43 +25,19 @@ const MQTT_CLIENT_ID: string = 'arkts_conveyor_app';
 const WIFI_SSID: string = 'zys';
 const WIFI_PASSWORD: string = '12345678';
 
-// Conveyor Belt Status Data
-interface ConveyorStatus {
-  hasItem: number;       // 0 = No item, 1 = Item detected
-  temperature: number;   // Temperature in Celsius
-  motorState: number;    // 0 = Stopped, 1 = Running
+// Conveyor Belt Status Data from MQTT
+interface MqttData {
+  hasItem?: number;       // 0 = No item, 1 = Item detected
+  temperature?: number;   // Temperature in Celsius
+  motorState?: number;    // 0 = Stopped, 1 = Running
 }
 
-@Entry
-@Component
-struct Index {
-  // State variables for UI display
-  @State hasItem: boolean = false;
-  @State temperature: number = 0.0;
-  @State motorRunning: boolean = false;
-  @State overTemp: boolean = false;
-  @State isConnected: boolean = false;
-  @State connectionStatus: string = '未连接';
-  @State lastUpdate: string = '--:--:--';
+// MQTT Utility Class
+class MQTTUtil {
+  private mqttClient: ReturnType<typeof MqttAsync.createMqtt> | null = null;
+  private isConnected: boolean = false;
 
-  // MQTT client instance
-  private mqttClient: MqttClient | null = null;
-
-  // Temperature threshold (same as code9: 30°C)
-  private readonly TEMP_THRESHOLD: number = 30.0;
-
-  aboutToAppear(): void {
-    this.connectMqtt();
-  }
-
-  aboutToDisappear(): void {
-    this.disconnectMqtt();
-  }
-
-  // Connect to MQTT broker
-  private connectMqtt(): void {
-    this.connectionStatus = '连接中...';
-
+  connect(onMessage: (err: Error, data: MqttMessage) => void): void {
     // Create MQTT client
     this.mqttClient = MqttAsync.createMqtt({
       url: `tcp://${MQTT_HOST}:${MQTT_PORT}`,
@@ -70,20 +46,14 @@ struct Index {
     });
 
     // Set up message arrival callback
-    this.mqttClient.messageArrived((err: Error | null, data: object) => {
-      if (err) {
-        console.error('[MQTT] Message error: ' + err.message);
-        return;
-      }
-      const msgData = data as { topic: string; payload: string };
-      this.handleMessage(msgData.topic, msgData.payload);
+    this.mqttClient.messageArrived((err: Error, data: MqttMessage) => {
+      onMessage(err, data);
     });
 
     // Set up connection lost callback
-    this.mqttClient.connectLost((err: Error | null, data: object) => {
+    this.mqttClient.connectLost((err: Error, data: MqttMessage) => {
       console.info('[MQTT] Connection lost');
       this.isConnected = false;
-      this.connectionStatus = '连接断开';
     });
 
     // Connect to broker
@@ -99,18 +69,15 @@ struct Index {
       .then(() => {
         console.info('[MQTT] Connected to broker');
         this.isConnected = true;
-        this.connectionStatus = '已连接';
-        this.subscribeToTopic();
+        this.subscribe();
       })
       .catch((err: Error) => {
         console.error('[MQTT] Connection failed: ' + err.message);
         this.isConnected = false;
-        this.connectionStatus = '连接失败';
       });
   }
 
-  // Subscribe to conveyor topic
-  private subscribeToTopic(): void {
+  private subscribe(): void {
     if (!this.mqttClient) {
       return;
     }
@@ -129,163 +96,269 @@ struct Index {
       });
   }
 
-  // Handle incoming MQTT message
-  private handleMessage(topic: string, payload: string): void {
-    if (topic === MQTT_TOPIC) {
-      try {
-        const data: ConveyorStatus = JSON.parse(payload);
-
-        // Update UI state
-        this.hasItem = data.hasItem === 1;
-        this.temperature = data.temperature;
-        this.motorRunning = data.motorState === 1;
-        this.overTemp = data.temperature > this.TEMP_THRESHOLD;
-
-        // Update timestamp
-        const now = new Date();
-        const hours = now.getHours().toString().padStart(2, '0');
-        const minutes = now.getMinutes().toString().padStart(2, '0');
-        const seconds = now.getSeconds().toString().padStart(2, '0');
-        this.lastUpdate = `${hours}:${minutes}:${seconds}`;
-
-        console.info(`[MQTT] Data received - Item: ${this.hasItem}, Temp: ${this.temperature}, Motor: ${this.motorRunning}`);
-      } catch (error) {
-        console.error('[MQTT] Parse error: ' + error);
-      }
+  publish(message: string): void {
+    if (!this.mqttClient || !this.isConnected) {
+      console.error('[MQTT] Cannot publish: not connected');
+      return;
     }
+
+    this.mqttClient.publish({
+      topic: MQTT_TOPIC,
+      qos: 0,
+      payload: message
+    })
+      .then(() => {
+        console.info('[MQTT] Message published');
+      })
+      .catch((err: Error) => {
+        console.error('[MQTT] Publish failed: ' + err.message);
+      });
   }
 
-  // Disconnect from MQTT broker
-  private disconnectMqtt(): void {
+  disconnect(): void {
     if (this.mqttClient) {
-      const client = this.mqttClient;
-      this.mqttClient = null;
-      client.disconnect()
+      this.mqttClient.disconnect()
         .then(() => {
           console.info('[MQTT] Disconnected');
+          this.isConnected = false;
         })
         .catch((err: Error) => {
           console.error('[MQTT] Disconnect error: ' + err.message);
         });
+      this.mqttClient = null;
     }
   }
 
-  // Reconnect to MQTT broker
-  private reconnect(): void {
-    this.disconnectMqtt();
-    this.connectionStatus = '重新连接中...';
-    this.isConnected = false;
+  getConnectionStatus(): boolean {
+    return this.isConnected;
+  }
+}
+
+@Entry
+@Component
+struct Index {
+  // State variables for UI display
+  @State hasItem: boolean = false;
+  @State temperature: number = 0.0;
+  @State motorRunning: boolean = false;
+  @State overTemp: boolean = false;
+  @State wifiStatus: number = 0;  // 0 = disconnected, 1 = connected
+  @State lastUpdateTime: string = '--:--:--';
+
+  // MQTT utility instance
+  private mqttUtil: MQTTUtil = new MQTTUtil();
+
+  // Temperature threshold (same as code9: 30°C)
+  private readonly TEMP_THRESHOLD: number = 30.0;
+
+  aboutToAppear(): void {
+    // Initialize with mock data
+    this.initMockData();
+
+    // Connect to MQTT and receive real-time data
+    this.mqttUtil.connect(
+      (err: Error, data: MqttMessage) => {
+        if (!err && data?.payload) {
+          try {
+            const receivedData: MqttData = JSON.parse(String(data.payload));
+
+            // Update sensor data
+            this.hasItem = (receivedData.hasItem ?? 0) === 1;
+            this.temperature = receivedData.temperature ?? this.temperature;
+            this.motorRunning = (receivedData.motorState ?? 0) === 1;
+            this.overTemp = this.temperature > this.TEMP_THRESHOLD;
+
+            // Update connection status and timestamp
+            this.wifiStatus = 1;
+            this.lastUpdateTime = new Date().toLocaleTimeString();
+
+            console.info(`[MQTT] Data received - Item: ${this.hasItem}, Temp: ${this.temperature}, Motor: ${this.motorRunning}`);
+          } catch (e) {
+            console.error('[MQTT] Parse error:', e);
+          }
+        }
+      }
+    );
+  }
+
+  aboutToDisappear(): void {
+    this.mqttUtil.disconnect();
+  }
+
+  initMockData(): void {
+    // Initialize with default values
+    this.hasItem = false;
+    this.temperature = 25.0;
+    this.motorRunning = false;
+    this.overTemp = false;
+    this.wifiStatus = 0;
+  }
+
+  handleReconnect(): void {
+    this.wifiStatus = 0;
+    this.mqttUtil.disconnect();
     setTimeout(() => {
-      this.connectMqtt();
+      this.mqttUtil.connect(
+        (err: Error, data: MqttMessage) => {
+          if (!err && data?.payload) {
+            try {
+              const receivedData: MqttData = JSON.parse(String(data.payload));
+              this.hasItem = (receivedData.hasItem ?? 0) === 1;
+              this.temperature = receivedData.temperature ?? this.temperature;
+              this.motorRunning = (receivedData.motorState ?? 0) === 1;
+              this.overTemp = this.temperature > this.TEMP_THRESHOLD;
+              this.wifiStatus = 1;
+              this.lastUpdateTime = new Date().toLocaleTimeString();
+            } catch (e) {
+              console.error('[MQTT] Parse error:', e);
+            }
+          }
+        }
+      );
     }, 1000);
   }
 
   build() {
     Column() {
-      // Title
-      Text('智能传送带监控系统')
-        .fontSize(28)
-        .fontWeight(FontWeight.Bold)
-        .fontColor('#333333')
-        .margin({ top: 20, bottom: 10 })
-
-      // Connection Status
+      // Top Title Bar
       Row() {
-        Text('●')
-          .fontSize(16)
-          .fontColor(this.isConnected ? '#4CAF50' : '#F44336')
-          .margin({ right: 8 })
-        Text(this.connectionStatus)
-          .fontSize(16)
-          .fontColor(this.isConnected ? '#4CAF50' : '#F44336')
-      }
-      .margin({ bottom: 20 })
-
-      // Status Cards Container
-      Column() {
-        // Item Detection Card
-        this.StatusCard(
-          '📦',
-          '物品检测',
-          this.hasItem ? '有物品' : '无物品',
-          this.hasItem ? '#4CAF50' : '#9E9E9E'
-        )
-
-        // Temperature Card
-        this.StatusCard(
-          '🌡️',
-          '当前温度',
-          `${this.temperature.toFixed(1)}°C`,
-          this.overTemp ? '#F44336' : '#2196F3'
-        )
-
-        // Motor Status Card
-        this.StatusCard(
-          '⚙️',
-          '电机状态',
-          this.motorRunning ? '运行中' : '已停止',
-          this.motorRunning ? '#4CAF50' : '#FF9800'
-        )
-
-        // Alarm Status Card
-        this.StatusCard(
-          '🔔',
-          '报警状态',
-          this.overTemp ? '温度过高!' : '正常',
-          this.overTemp ? '#F44336' : '#4CAF50'
-        )
+        Text('📦')
+          .fontSize(28)
+        Text('智能传送带监控系统')
+          .fontSize(20)
+          .fontWeight(FontWeight.Bold)
+          .fontColor(Color.White)
+          .margin({ left: 10 })
       }
       .width('100%')
-      .padding(16)
+      .height(56)
+      .padding({ left: 16, right: 16 })
+      .backgroundColor('#2196F3')
+      .justifyContent(FlexAlign.Start)
 
-      // Last Update Time
-      Text(`最后更新: ${this.lastUpdate}`)
-        .fontSize(14)
-        .fontColor('#666666')
-        .margin({ top: 16 })
+      // Content Area
+      Scroll() {
+        Column({ space: 12 }) {
+          // Connection Status Card
+          Row() {
+            Text('●')
+              .fontSize(16)
+              .fontColor(this.wifiStatus === 1 ? '#4CAF50' : '#F44336')
+              .margin({ right: 8 })
+            Text(this.wifiStatus === 1 ? '已连接' : '未连接')
+              .fontSize(16)
+              .fontColor(this.wifiStatus === 1 ? '#4CAF50' : '#F44336')
+            Blank()
+            Text(`更新: ${this.lastUpdateTime}`)
+              .fontSize(12)
+              .fontColor('#999999')
+          }
+          .width('100%')
+          .padding(12)
+          .backgroundColor(Color.White)
+          .borderRadius(8)
 
-      // Connection Info
-      Column() {
-        Text('连接信息')
-          .fontSize(18)
-          .fontWeight(FontWeight.Medium)
-          .fontColor('#333333')
-          .margin({ bottom: 8 })
+          // Status Cards
+          Column({ space: 10 }) {
+            // Item Detection Card
+            this.StatusCard(
+              '📦',
+              '物品检测',
+              this.hasItem ? '有物品' : '无物品',
+              this.hasItem ? '#4CAF50' : '#9E9E9E'
+            )
 
-        Text(`WiFi: ${WIFI_SSID}`)
-          .fontSize(14)
-          .fontColor('#666666')
+            // Temperature Card
+            this.StatusCard(
+              '🌡️',
+              '当前温度',
+              `${this.temperature.toFixed(1)}°C`,
+              this.overTemp ? '#F44336' : '#2196F3'
+            )
 
-        Text(`服务器: ${MQTT_HOST}:${MQTT_PORT}`)
-          .fontSize(14)
-          .fontColor('#666666')
+            // Motor Status Card
+            this.StatusCard(
+              '⚙️',
+              '电机状态',
+              this.motorRunning ? '运行中' : '已停止',
+              this.motorRunning ? '#4CAF50' : '#FF9800'
+            )
 
-        Text(`主题: ${MQTT_TOPIC}`)
-          .fontSize(14)
-          .fontColor('#666666')
+            // Alarm Status Card
+            this.StatusCard(
+              '🔔',
+              '报警状态',
+              this.overTemp ? '温度过高!' : '正常',
+              this.overTemp ? '#F44336' : '#4CAF50'
+            )
+          }
+          .width('100%')
+
+          // Connection Info Card
+          Column({ space: 8 }) {
+            Text('连接信息')
+              .fontSize(16)
+              .fontWeight(FontWeight.Medium)
+              .fontColor('#333333')
+
+            Row() {
+              Text('WiFi:')
+                .fontSize(14)
+                .fontColor('#666666')
+              Blank()
+              Text(WIFI_SSID)
+                .fontSize(14)
+                .fontColor('#333333')
+            }
+            .width('100%')
+
+            Row() {
+              Text('服务器:')
+                .fontSize(14)
+                .fontColor('#666666')
+              Blank()
+              Text(`${MQTT_HOST}:${MQTT_PORT}`)
+                .fontSize(14)
+                .fontColor('#333333')
+            }
+            .width('100%')
+
+            Row() {
+              Text('主题:')
+                .fontSize(14)
+                .fontColor('#666666')
+              Blank()
+              Text(MQTT_TOPIC)
+                .fontSize(14)
+                .fontColor('#333333')
+            }
+            .width('100%')
+          }
+          .width('100%')
+          .padding(16)
+          .backgroundColor(Color.White)
+          .borderRadius(8)
+
+          // Reconnect Button
+          Button('重新连接')
+            .width('100%')
+            .height(48)
+            .fontSize(16)
+            .fontColor(Color.White)
+            .backgroundColor(this.wifiStatus === 1 ? '#9E9E9E' : '#2196F3')
+            .borderRadius(8)
+            .onClick(() => {
+              this.handleReconnect();
+            })
+        }
+        .padding(16)
       }
-      .width('90%')
-      .padding(16)
+      .layoutWeight(1)
       .backgroundColor('#F5F5F5')
-      .borderRadius(12)
-      .margin({ top: 20 })
-
-      // Reconnect Button
-      Button('重新连接')
-        .width('80%')
-        .height(48)
-        .fontSize(18)
-        .fontColor('#FFFFFF')
-        .backgroundColor(this.isConnected ? '#9E9E9E' : '#2196F3')
-        .borderRadius(24)
-        .margin({ top: 20, bottom: 20 })
-        .onClick(() => {
-          this.reconnect();
-        })
+      .scrollBar(BarState.Off)
     }
     .width('100%')
     .height('100%')
-    .backgroundColor('#FFFFFF')
   }
 
   // Reusable Status Card Component
@@ -294,7 +367,7 @@ struct Index {
     Row() {
       Text(icon)
         .fontSize(32)
-        .margin({ right: 16 })
+        .margin({ right: 12 })
 
       Column() {
         Text(title)
@@ -303,7 +376,7 @@ struct Index {
           .margin({ bottom: 4 })
 
         Text(value)
-          .fontSize(20)
+          .fontSize(18)
           .fontWeight(FontWeight.Medium)
           .fontColor(color)
       }
@@ -312,13 +385,12 @@ struct Index {
       Blank()
 
       Text('●')
-        .fontSize(16)
+        .fontSize(20)
         .fontColor(color)
     }
     .width('100%')
     .padding(16)
-    .backgroundColor('#FAFAFA')
-    .borderRadius(12)
-    .margin({ bottom: 12 })
+    .backgroundColor(Color.White)
+    .borderRadius(8)
   }
 }
