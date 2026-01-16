@@ -69,13 +69,18 @@ struct Index {
       persistenceType: 1
     });
 
-    // Set up message callback
-    this.mqttClient.on('messageArrived', (topic: string, payload: string) => {
-      this.handleMessage(topic, payload);
+    // Set up message arrival callback
+    this.mqttClient.messageArrived((err: Error | null, data: object) => {
+      if (err) {
+        console.error('[MQTT] Message error: ' + err.message);
+        return;
+      }
+      const msgData = data as { topic: string; payload: string };
+      this.handleMessage(msgData.topic, msgData.payload);
     });
 
     // Set up connection lost callback
-    this.mqttClient.on('connectLost', () => {
+    this.mqttClient.connectLost((err: Error | null, data: object) => {
       console.info('[MQTT] Connection lost');
       this.isConnected = false;
       this.connectionStatus = '连接断开';
@@ -83,7 +88,7 @@ struct Index {
 
     // Connect to broker
     const connectOptions: MqttConnectOptions = {
-      cleanSession: true,
+      cleanStart: true,
       connectTimeout: 30,
       keepAliveInterval: 60,
       userName: 'hi3861',
