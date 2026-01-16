@@ -1,0 +1,393 @@
+import { MqttMessage } from '@ohos/mqtt';
+import MQTTUtil from '../common/utils/MQTTUtil';
+
+/**
+ * 智能传送带系统界面 - 适配code9
+ * 
+ * 功能说明：
+ * 1. HX711压力传感器检测物品，激活TB6612电机驱动
+ * 2. DHT11温度传感器监测温度，超过30°C时激活蜂鸣器并停止电机
+ * 3. YL-62红外传感器检测物品，激活舵机
+ * 4. OLED显示：物品状态、温度、电机状态
+ * 5. WiFi + MQTT发送数据到手机APP (WiFi: zys/12345678, 服务器: 192.168.43.230)
+ * 
+ * MQTT配置：
+ * - 服务器: 192.168.43.230
+ * - 端口: 1883
+ * - 主题: conveyor
+ * - 数据格式: {"hasItem":int, "temperature":float, "motorState":int}
+ */
+
+// MQTT数据接口 - 来自硬件端
+interface MqttData {
+  hasItem?: number;        // 物品检测状态 (0: 无, 1: 有)
+  temperature?: number;    // 温度值 (°C)
+  motorState?: number;     // 电机状态 (0: 停止, 1: 运行)
+}
+
+// 控制数据接口 - 发送到硬件端
+interface ControlData {
+  type: string;           // 控制类型
+  value: number;          // 控制值
+  timestamp: number;      // 时间戳
+}
+
+@Entry
+@Component
+struct Index {
+  // 传感器数据状态
+  @State hasItem: number = 0;           // 物品检测状态
+  @State temperature: number = 0.0;     // 当前温度
+  @State motorState: number = 0;        // 电机状态
+  @State wifiConnected: number = 0;     // WiFi连接状态
+  @State lastUpdateTime: string = '';   // 最后更新时间
+  @State alarmStatus: number = 0;       // 报警状态 (温度过高)
+
+  // MQTT工具实例
+  private mqttUtil: MQTTUtil = new MQTTUtil();
+
+  aboutToAppear(): void {
+    // 连接MQTT接收实时数据
+    this.connectMqtt();
+  }
+
+  // 连接MQTT服务器
+  connectMqtt(): void {
+    this.mqttUtil.connect(
+      (err: Error, data: MqttMessage) => {
+        if (err) {
+          console.error('MQTT连接错误:', err);
+          this.wifiConnected = 0;
+          return;
+        }
+        if (data?.payload) {
+          try {
+            const receivedData: MqttData = JSON.parse(String(data.payload));
+
+            // 更新传感器数据
+            if (receivedData.hasItem !== undefined) {
+              this.hasItem = receivedData.hasItem;
+            }
+            if (receivedData.temperature !== undefined) {
+              this.temperature = receivedData.temperature;
+              // 温度超过30°C时设置报警状态
+              this.alarmStatus = this.temperature > 30 ? 1 : 0;
+            }
+            if (receivedData.motorState !== undefined) {
+              this.motorState = receivedData.motorState;
+            }
+
+            // 收到数据表示WiFi已连接
+            this.wifiConnected = 1;
+            this.lastUpdateTime = new Date().toLocaleTimeString();
+          } catch (e) {
+            console.error('解析MQTT数据失败:', e);
+          }
+        }
+      }
+    );
+  }
+
+  // 发送控制指令到硬件
+  sendControlCommand(controlType: string, value: number): void {
+    const controlData: ControlData = {
+      type: controlType,
+      value: value,
+      timestamp: Date.now()
+    };
+    console.info('发送控制指令:', JSON.stringify(controlData));
+    this.mqttUtil.publish(JSON.stringify(controlData));
+  }
+
+  build() {
+    Column() {
+      // 顶部标题栏
+      Row() {
+        Image($r('app.media.conveyor'))
+          .width(32)
+          .height(32)
+        Text("智能传送带系统")
+          .fontSize(20)
+          .fontWeight(FontWeight.Bold)
+          .fontColor(Color.White)
+          .margin({ left: 10 })
+      }
+      .width('100%')
+      .height(56)
+      .padding({ left: 16, right: 16 })
+      .backgroundColor('#4CAF50')
+      .justifyContent(FlexAlign.Start)
+
+      // 内容区域
+      Scroll() {
+        Column({ space: 16 }) {
+          // 连接状态卡片
+          this.ConnectionStatusCard()
+
+          // 传感器数据卡片
+          this.SensorDataCard()
+
+          // 设备状态卡片
+          this.DeviceStatusCard()
+
+          // 控制面板卡片
+          this.ControlPanelCard()
+        }
+        .padding({ left: 16, right: 16, top: 16, bottom: 20 })
+      }
+      .layoutWeight(1)
+      .backgroundColor('#F5F5F5')
+      .scrollBar(BarState.Off)
+    }
+    .width('100%')
+    .height('100%')
+  }
+
+  // 连接状态卡片
+  @Builder
+  ConnectionStatusCard() {
+    Column() {
+      Row() {
+        Text("连接状态")
+          .fontSize(16)
+          .fontWeight(FontWeight.Medium)
+          .fontColor('#333333')
+        Blank()
+        Circle()
+          .width(12)
+          .height(12)
+          .fill(this.wifiConnected === 1 ? '#4CAF50' : '#F44336')
+        Text(this.wifiConnected === 1 ? '已连接' : '未连接')
+          .fontSize(14)
+          .fontColor(this.wifiConnected === 1 ? '#4CAF50' : '#F44336')
+          .margin({ left: 8 })
+      }
+      .width('100%')
+
+      // WiFi和MQTT配置信息
+      Row() {
+        Column() {
+          Text("WiFi: zys")
+            .fontSize(12)
+            .fontColor('#666666')
+          Text("服务器: 192.168.43.230")
+            .fontSize(12)
+            .fontColor('#666666')
+            .margin({ top: 4 })
+        }
+        .alignItems(HorizontalAlign.Start)
+        Blank()
+        Text(this.lastUpdateTime ? `更新: ${this.lastUpdateTime}` : '等待数据...')
+          .fontSize(12)
+          .fontColor('#999999')
+      }
+      .width('100%')
+      .margin({ top: 12 })
+    }
+    .width('100%')
+    .padding(16)
+    .backgroundColor(Color.White)
+    .borderRadius(12)
+    .shadow({ radius: 4, color: '#1A000000', offsetX: 0, offsetY: 2 })
+  }
+
+  // 传感器数据卡片
+  @Builder
+  SensorDataCard() {
+    Column() {
+      Text("传感器数据")
+        .fontSize(16)
+        .fontWeight(FontWeight.Medium)
+        .fontColor('#333333')
+        .width('100%')
+
+      Row() {
+        // 温度显示
+        Column() {
+          Image($r('app.media.temperature'))
+            .width(40)
+            .height(40)
+          Text(`${this.temperature.toFixed(1)}°C`)
+            .fontSize(24)
+            .fontWeight(FontWeight.Bold)
+            .fontColor(this.temperature > 30 ? '#F44336' : '#333333')
+            .margin({ top: 8 })
+          Text("温度")
+            .fontSize(12)
+            .fontColor('#666666')
+            .margin({ top: 4 })
+        }
+        .layoutWeight(1)
+        .alignItems(HorizontalAlign.Center)
+
+        // 物品检测显示
+        Column() {
+          Image($r('app.media.item'))
+            .width(40)
+            .height(40)
+          Text(this.hasItem === 1 ? '有物品' : '无物品')
+            .fontSize(18)
+            .fontWeight(FontWeight.Bold)
+            .fontColor(this.hasItem === 1 ? '#4CAF50' : '#999999')
+            .margin({ top: 8 })
+          Text("物品检测")
+            .fontSize(12)
+            .fontColor('#666666')
+            .margin({ top: 4 })
+        }
+        .layoutWeight(1)
+        .alignItems(HorizontalAlign.Center)
+      }
+      .width('100%')
+      .margin({ top: 16 })
+    }
+    .width('100%')
+    .padding(16)
+    .backgroundColor(Color.White)
+    .borderRadius(12)
+    .shadow({ radius: 4, color: '#1A000000', offsetX: 0, offsetY: 2 })
+  }
+
+  // 设备状态卡片
+  @Builder
+  DeviceStatusCard() {
+    Column() {
+      Text("设备状态")
+        .fontSize(16)
+        .fontWeight(FontWeight.Medium)
+        .fontColor('#333333')
+        .width('100%')
+
+      // 电机状态
+      Row() {
+        Image($r('app.media.motor'))
+          .width(32)
+          .height(32)
+        Text("电机")
+          .fontSize(14)
+          .fontColor('#333333')
+          .margin({ left: 12 })
+        Blank()
+        Row() {
+          Circle()
+            .width(10)
+            .height(10)
+            .fill(this.motorState === 1 ? '#4CAF50' : '#999999')
+          Text(this.motorState === 1 ? '运行中' : '已停止')
+            .fontSize(14)
+            .fontColor(this.motorState === 1 ? '#4CAF50' : '#666666')
+            .margin({ left: 8 })
+        }
+      }
+      .width('100%')
+      .padding({ top: 12, bottom: 12 })
+      .borderColor('#EEEEEE')
+      .borderWidth({ bottom: 1 })
+
+      // 报警状态
+      Row() {
+        Image($r('app.media.alarm'))
+          .width(32)
+          .height(32)
+        Text("报警")
+          .fontSize(14)
+          .fontColor('#333333')
+          .margin({ left: 12 })
+        Blank()
+        Row() {
+          Circle()
+            .width(10)
+            .height(10)
+            .fill(this.alarmStatus === 1 ? '#F44336' : '#4CAF50')
+          Text(this.alarmStatus === 1 ? '温度过高!' : '正常')
+            .fontSize(14)
+            .fontColor(this.alarmStatus === 1 ? '#F44336' : '#4CAF50')
+            .margin({ left: 8 })
+        }
+      }
+      .width('100%')
+      .padding({ top: 12, bottom: 12 })
+    }
+    .width('100%')
+    .padding(16)
+    .backgroundColor(Color.White)
+    .borderRadius(12)
+    .shadow({ radius: 4, color: '#1A000000', offsetX: 0, offsetY: 2 })
+  }
+
+  // 控制面板卡片
+  @Builder
+  ControlPanelCard() {
+    Column() {
+      Text("手动控制")
+        .fontSize(16)
+        .fontWeight(FontWeight.Medium)
+        .fontColor('#333333')
+        .width('100%')
+
+      Row() {
+        // 电机控制按钮
+        Button(this.motorState === 1 ? '停止电机' : '启动电机')
+          .width('45%')
+          .height(44)
+          .fontSize(14)
+          .fontColor(Color.White)
+          .backgroundColor(this.motorState === 1 ? '#F44336' : '#4CAF50')
+          .borderRadius(8)
+          .onClick(() => {
+            const newState = this.motorState === 1 ? 0 : 1;
+            this.sendControlCommand('motor', newState);
+          })
+
+        // 蜂鸣器控制按钮
+        Button('测试蜂鸣器')
+          .width('45%')
+          .height(44)
+          .fontSize(14)
+          .fontColor(Color.White)
+          .backgroundColor('#FF9800')
+          .borderRadius(8)
+          .onClick(() => {
+            this.sendControlCommand('buzzer', 1);
+          })
+      }
+      .width('100%')
+      .justifyContent(FlexAlign.SpaceBetween)
+      .margin({ top: 16 })
+
+      Row() {
+        // 舵机开启按钮
+        Button('舵机开启')
+          .width('45%')
+          .height(44)
+          .fontSize(14)
+          .fontColor(Color.White)
+          .backgroundColor('#2196F3')
+          .borderRadius(8)
+          .onClick(() => {
+            this.sendControlCommand('servo', 1);
+          })
+
+        // 舵机关闭按钮
+        Button('舵机关闭')
+          .width('45%')
+          .height(44)
+          .fontSize(14)
+          .fontColor(Color.White)
+          .backgroundColor('#607D8B')
+          .borderRadius(8)
+          .onClick(() => {
+            this.sendControlCommand('servo', 0);
+          })
+      }
+      .width('100%')
+      .justifyContent(FlexAlign.SpaceBetween)
+      .margin({ top: 12 })
+    }
+    .width('100%')
+    .padding(16)
+    .backgroundColor(Color.White)
+    .borderRadius(12)
+    .shadow({ radius: 4, color: '#1A000000', offsetX: 0, offsetY: 2 })
+  }
+}
