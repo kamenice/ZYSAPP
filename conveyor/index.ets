@@ -13,7 +13,7 @@
  * And add INTERNET permission in module.json5
  */
 
-import { MqttAsync, MqttConnectOptions, MqttSubscribeOptions, MqttMessage } from '@ohos/mqtt';
+import { MqttAsync, MqttConnectOptions, MqttSubscribeOptions, MqttResponse, MqttPublishOptions, MqttAsyncClient } from '@ohos/mqtt';
 
 // MQTT Configuration
 const MQTT_HOST: string = '192.168.43.230';
@@ -32,12 +32,18 @@ interface MqttData {
   motorState?: number;    // 0 = Stopped, 1 = Running
 }
 
+// Message callback type
+type MessageCallback = (payload: string) => void;
+
 // MQTT Utility Class
 class MQTTUtil {
-  private mqttClient: ReturnType<typeof MqttAsync.createMqtt> | null = null;
+  private mqttClient: MqttAsyncClient | null = null;
   private isConnected: boolean = false;
+  private messageCallback: MessageCallback | null = null;
 
-  connect(onMessage: (err: Error, data: MqttMessage) => void): void {
+  connect(onMessage: MessageCallback): void {
+    this.messageCallback = onMessage;
+
     // Create MQTT client
     this.mqttClient = MqttAsync.createMqtt({
       url: `tcp://${MQTT_HOST}:${MQTT_PORT}`,
@@ -46,19 +52,23 @@ class MQTTUtil {
     });
 
     // Set up message arrival callback
-    this.mqttClient.messageArrived((err: Error, data: MqttMessage) => {
-      onMessage(err, data);
+    this.mqttClient.messageArrived((err: Error, data: MqttResponse) => {
+      if (!err && data && this.messageCallback) {
+        // Get payload from response
+        const payload = data.message?.payload ?? '';
+        this.messageCallback(String(payload));
+      }
     });
 
     // Set up connection lost callback
-    this.mqttClient.connectLost((err: Error, data: MqttMessage) => {
+    this.mqttClient.connectLost((err: Error, data: MqttResponse) => {
       console.info('[MQTT] Connection lost');
       this.isConnected = false;
     });
 
     // Connect to broker
     const connectOptions: MqttConnectOptions = {
-      cleanStart: true,
+      cleanSession: true,
       connectTimeout: 30,
       keepAliveInterval: 60,
       userName: 'hi3861',
@@ -102,11 +112,13 @@ class MQTTUtil {
       return;
     }
 
-    this.mqttClient.publish({
+    const publishOptions: MqttPublishOptions = {
       topic: MQTT_TOPIC,
       qos: 0,
       payload: message
-    })
+    };
+
+    this.mqttClient.publish(publishOptions)
       .then(() => {
         console.info('[MQTT] Message published');
       })
@@ -156,29 +168,9 @@ struct Index {
     this.initMockData();
 
     // Connect to MQTT and receive real-time data
-    this.mqttUtil.connect(
-      (err: Error, data: MqttMessage) => {
-        if (!err && data?.payload) {
-          try {
-            const receivedData: MqttData = JSON.parse(String(data.payload));
-
-            // Update sensor data
-            this.hasItem = (receivedData.hasItem ?? 0) === 1;
-            this.temperature = receivedData.temperature ?? this.temperature;
-            this.motorRunning = (receivedData.motorState ?? 0) === 1;
-            this.overTemp = this.temperature > this.TEMP_THRESHOLD;
-
-            // Update connection status and timestamp
-            this.wifiStatus = 1;
-            this.lastUpdateTime = new Date().toLocaleTimeString();
-
-            console.info(`[MQTT] Data received - Item: ${this.hasItem}, Temp: ${this.temperature}, Motor: ${this.motorRunning}`);
-          } catch (e) {
-            console.error('[MQTT] Parse error:', e);
-          }
-        }
-      }
-    );
+    this.mqttUtil.connect((payload: string) => {
+      this.handleMqttMessage(payload);
+    });
   }
 
   aboutToDisappear(): void {
@@ -194,27 +186,33 @@ struct Index {
     this.wifiStatus = 0;
   }
 
+  handleMqttMessage(payload: string): void {
+    try {
+      const receivedData: MqttData = JSON.parse(payload);
+
+      // Update sensor data
+      this.hasItem = (receivedData.hasItem ?? 0) === 1;
+      this.temperature = receivedData.temperature ?? this.temperature;
+      this.motorRunning = (receivedData.motorState ?? 0) === 1;
+      this.overTemp = this.temperature > this.TEMP_THRESHOLD;
+
+      // Update connection status and timestamp
+      this.wifiStatus = 1;
+      this.lastUpdateTime = new Date().toLocaleTimeString();
+
+      console.info(`[MQTT] Data received - Item: ${this.hasItem}, Temp: ${this.temperature}, Motor: ${this.motorRunning}`);
+    } catch (e) {
+      console.error('[MQTT] Parse error:', e);
+    }
+  }
+
   handleReconnect(): void {
     this.wifiStatus = 0;
     this.mqttUtil.disconnect();
     setTimeout(() => {
-      this.mqttUtil.connect(
-        (err: Error, data: MqttMessage) => {
-          if (!err && data?.payload) {
-            try {
-              const receivedData: MqttData = JSON.parse(String(data.payload));
-              this.hasItem = (receivedData.hasItem ?? 0) === 1;
-              this.temperature = receivedData.temperature ?? this.temperature;
-              this.motorRunning = (receivedData.motorState ?? 0) === 1;
-              this.overTemp = this.temperature > this.TEMP_THRESHOLD;
-              this.wifiStatus = 1;
-              this.lastUpdateTime = new Date().toLocaleTimeString();
-            } catch (e) {
-              console.error('[MQTT] Parse error:', e);
-            }
-          }
-        }
-      );
+      this.mqttUtil.connect((payload: string) => {
+        this.handleMqttMessage(payload);
+      });
     }, 1000);
   }
 
