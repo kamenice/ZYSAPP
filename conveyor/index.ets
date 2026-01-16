@@ -41,9 +41,15 @@ const MQTT_PORT: number = 1883;
 const MQTT_TOPIC: string = 'conveyor';
 const MQTT_CLIENT_ID: string = 'arkts_conveyor_app';
 
-// WiFi Configuration
+// WiFi Configuration (as per requirements)
+// Note: These credentials are specified in the project requirements
+// In production, consider using secure storage or configuration files
 const WIFI_SSID: string = 'zys';
 const WIFI_PASSWORD: string = '12345678';
+
+// MQTT Authentication (matching hi3861 device credentials)
+const MQTT_USERNAME: string = 'hi3861';
+const MQTT_PASSWORD: string = 'password';
 
 // Conveyor status data interface
 interface ConveyorStatus {
@@ -76,14 +82,18 @@ struct ConveyorBeltApp {
     this.disconnectMqtt();
   }
 
-  // Connect to WiFi
+  // Connect to WiFi with proper state handling
   async connectToWiFi() {
     this.connectionStatus = 'Connecting to WiFi...';
+    this.wifiConnected = false;
+
     try {
       // Check if WiFi is enabled
       let isActive = wifi.isWifiActive();
       if (!isActive) {
-        wifi.enableWifi();
+        await wifi.enableWifi();
+        // Wait for WiFi to be fully enabled
+        await this.waitForCondition(() => wifi.isWifiActive(), 5000);
       }
 
       // Configure WiFi connection
@@ -94,18 +104,42 @@ struct ConveyorBeltApp {
       };
 
       // Connect to WiFi
-      wifi.connectToDevice(config);
+      await wifi.connectToDevice(config);
+
+      // Wait for connection to be established
+      await this.waitForCondition(() => wifi.isConnected(), 10000);
+
       this.wifiConnected = true;
       this.connectionStatus = 'WiFi Connected, connecting MQTT...';
 
-      // Connect to MQTT after WiFi
-      setTimeout(() => {
-        this.connectMqtt();
-      }, 2000);
+      // Connect to MQTT after WiFi connection confirmed
+      this.connectMqtt();
     } catch (error) {
+      this.wifiConnected = false;
       this.connectionStatus = 'WiFi connection failed';
       console.error('WiFi connection error:', JSON.stringify(error));
     }
+  }
+
+  // Helper function to wait for a condition with timeout
+  private waitForCondition(condition: () => boolean, timeoutMs: number): Promise<void> {
+    return new Promise((resolve, reject) => {
+      const checkInterval = 500;
+      let elapsed = 0;
+
+      const check = () => {
+        if (condition()) {
+          resolve();
+        } else if (elapsed >= timeoutMs) {
+          reject(new Error('Timeout waiting for condition'));
+        } else {
+          elapsed += checkInterval;
+          setTimeout(check, checkInterval);
+        }
+      };
+
+      check();
+    });
   }
 
   // Connect to MQTT broker
@@ -118,8 +152,8 @@ struct ConveyorBeltApp {
         connectTimeout: 30,
         keepAliveInterval: 60,
         cleanSession: true,
-        username: 'hi3861',
-        password: 'password'
+        username: MQTT_USERNAME,
+        password: MQTT_PASSWORD
       };
 
       this.mqttClient = mqtt.createMqttAsyncClient(mqttUrl, options);
